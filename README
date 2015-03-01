@@ -1,0 +1,227 @@
+# README
+
+This is the manual for project 5 (CDN)
+
+Team Name: enzen
+Team Member:
+Yingquan Yuan (NUID: 001176107)
+Zhongjie Mao (NUID: 001954575)
+
+
+Project5 is completed, we have both a working DNS server and a working HTTP
+server now with auto deployment script.
+The DNS server has been tested on 'cs5700cdnproject.ccs.neu.edu', and the
+HTTP server has been tested on each EC2 replicas.
+
+===============================================================================
+
+Project Directory Layout
+
+The project root directory is cdn.
+
+cdn/src
+Contains the whole Python implementation of our DNS server and HTTP server.
+
+cdn/deploy
+Contains the 3 extra shell scripts [deploy|run|stop]CDN for deployment.
+
+cdn/test
+Contains a bunch of scripts we used for smoke test and integration test.
+
+===============================================================================
+
+Makefile
+
+Run 'make' you will get all required executables at the project root directory.
+The executables are as below:
+dnsserver | httpserver | deployCDN | runCDN | stopCDN
+
+During this phase, the GeoIP database would get downloaded from our own web
+server and a simple processing script would be applied to the CSV based database,
+so that we don't have to submit the large database with the code. The download
+might take seconds. Since the professor mentioned in Piazza post @260 that
+these executables might be run from project directory, hence downloading the
+GeoIP database is an important step during make, because part of our DNS server
+functionality depends on the GeoIP. For deployment, a command in deployCDN will
+download and process the GeoIP database remotely on cs5700cdnproject.ccs.neu.edu.
+
+
+Run 'make clean' would clean up all unnecessary and stale files in the project
+directory.
+
+===============================================================================
+
+The Design
+
+cdns.py
+Configured all the CDNs' host addresses into it and a dictionary of addresses.
+
+dnspacket.py
+Defines three classes: DNSQuestion, DNSAnswer, DNSPacket. They help to pack and
+unpack DNS query data, DNS response data and DNS packet data.
+
+dnsserver.py
+This script defines two thread which will run when DNS starts:
+	* DNS server thread
+	* Statistics server thread
+DNS server thread is our DNS server which will be introduced later.  Statistics
+server is to receive the RTTs sent from EIGHT CDN replicas. The RTT is the  RTT
+between  a CDN  replica to a specific  client  that request resources from that
+CDN. This RTT will be used to help DNS get the best CDN for that client in  the
+future round. More specific details of how DNS select the best CDN for a client
+will be introduced at Algorithm section.
+
+dns_server.py
+A basic simple DNS server without any measurement methods.    You need to use:
+               ./dnsserver -p <port> -n <name>
+to run our DNS server.
+If you dig our DNS server,  it  will  respond i.root-servers.net which is hard
+coded just for testing;
+If you dig our DNS server for a host name, and if the name isn't the <name> you
+specified when you run our DNS server,  it will respond a DNS packet with RCODE
+field to be 3 which means the "Name error the domain name does not exists".
+If you dig our DNS server for a host name   which is the same as the <name> you
+specified when run our DNS server, currently, it will return a DNS Packet which
+contains one answer which is a four byte IP address of the ORIGIN server.
+
+statistic_server.py
+A basic TCP server which is to receive the RTTs sent from EIGHT CDN replicas.
+The meaning of these RTTs  have been introduced above and their usage will be
+explained later in Algorithm section.
+
+dns_config.py
+Contains a hard-coded DNS IP address and the DNS domain IP range, which is the
+IP range of Northeastern University, United States.
+
+httpserver.py
+A simple basic CDN HTTP server. You need to use:
+               ./httpserver -p <port> -o <origin>
+to run our CDN HTTP server.
+If a HTTP client, e.g wget, send request to our CDN HTTP server: first, it will
+check the local cache first.  If the request file exists in the local cache, it
+will read the file from local cache and send it to the client directly.  If the
+file does not exists in the local cache,  it will forward the request to ORIGIN
+server and get response from the ORIGIN server.  Then if the response status is
+200 OK,  it will save the file into local cache and forward the response to the
+client.
+
+httprequesthandler.py
+It contains two classes: Cache class and CDNHttpRequestHandler.  Cache class is
+to handle Cache management work for our CDN HTTP server.  CDNHttpRequestHandler
+class it to handle HTTP request sent from HTTP client. Each time a HTTP request
+received by CDN HTTP server a new CDNHttpRequestHandler  object will be created
+to handle this request.Thus our Cache object is a static field in handler class.
+
+geoip_splitter.py
+A tool script which is to help split the GeoIP original blocks and locations CSV
+file get from GeoIP database into our format of GeoIP files which will be used
+by DNS server the get the best CDN replica for a client when DNS server have no
+idea but to beg help from GeoIP.
+
+===============================================================================
+
+Algorithms for Measurement
+
+DNS replica selection algorithm:
+Our DNS applies  the  following algorithm to select a best replica CDN for each
+requesting client:
+
+1. Once a client requesting service for the first time, DNS will create a record
+   for this client. The record's format is as follows:
+   {<client IP>, {<CDN 1>, RTT; <CDN 2>, RTT; <CDN 3>, RTT; ..... <CDN 8, RTT>}}
+   Initially, all the RTT are set to be -1.
+   After initializing this record for this client, DNS pick the first CDN which
+   should be <CDN 1> to respond client.
+
+2. Client get <CDN 1> IP address, then send resource request to <CDN 1>. <CDN 1>
+   will get the RTT via the connection and send  the  RTT  back  to  DNS  before
+   client resource.
+
+3. DNS get the RTT between <CDN 1>  and that client and then update the client's
+   record. Now the record for that client would be like follows:
+   {<client IP>, {<CDN 1>, RTT1; <CDN 2>, -1; <CDN 3>, -1; ..... <CDN 8, -1>}}
+
+4. Next time the same client  send  request to DNS, DNS will search the client's
+   record in local cache.    If DNS fails to find the record, it will follow the
+   steps from 1 to 3.
+
+5. If DNS find the record for that client, it will go through  the  record  and
+   then:
+
+   1) If DNS meets a CDN whose RTT field is -1 which is the initial value,  DNS
+      will respond client with that CDN IP address;
+   2) If DNS find a CDN with smaller RTT,  it will pick it as the best CDN till
+      till now and keep searching until the last CDN.
+   3) After going through all the CDN's RTT of this client, DNS  will  get  the
+      best CDN for that client and respond the client with that CDN's IP address.
+
+6. Each time CDN received the connection request from the client, CDN will  get
+   the RTT from the three-way hand shake with client and  send  the RTT between
+   itself and the client to the DNS to update its record with that client.
+
+** Conclusion:
+   For the first 8 requests to our DNS from a specific client C, DNS will  give
+   all the CDN a chance--by pick one of them each time--to respond the client.
+   Then since the 9th time our DNS get the request from the same client C,  our
+   DNS is supposed to have all the RTTs between each CDN to that client C. Thus
+   now our DNS is able to pick the best CDN with lowest RTT according the record.
+
+GeoIP Algorithm:
+
+Once our DNS failed to get the best CDN for a client (normally  this  will  not
+happen), DNS will get help from GeoIP. It will calculate the geographic distance
+between each CDN replica to that client and  respond the client with  the  best
+one that has with  minimum distance to the client.
+
+Cache Management Algorithm (LRU, Least Recently Used)
+
+In our CDN HttpServer, the cache size is 9 * 1024 * 1024 B (9MB).     The cache
+follows the Least Recently Used (LRU) algorithm to maintain our cache.
+The details of our LRU algorithm is as follows:
+
+1. Each time client send a resource request to our CDN, CDN will check its local
+   cache to see if that resource exists.
+
+2. If that resource doesn't exist, CDN will send request to Origin Server for
+   that resource. If origin server respond with status code 200 and the resource,
+   CDN will try to store that resource into local cache by checking:
+   1) If local cache doesn't have sufficient room for that resource,   CDN will
+      pop the resources from the left side of  CDN  cache queue to move enough
+      rooms for the new resource.
+   2) If local cache have sufficient room for that resource,   CDN will put the
+      the new resource at the end of CDN cache queue.
+
+3. If that resource exist, CDN will respond the client with that resource, and:
+   1) Pick that resource from the cache queue;
+   2) Put that resource to the end the cache queue so that the resource is again
+   	  inside the CDN cache queue.
+
+4. If Origin Server respond CDN with status code other  than  200,  CDN will do
+   nothing but transmit those message to the client directly.
+
+===============================================================================
+
+Challenges and Future Works
+
+The main challenge we were faced with is how to select the most efficient HTTP
+replica on DNS, beyond using GeoIP database. Because the geographic distance
+cannot guarantee the best network path. And also because our DNS server is a
+single machine, which has less knowledge of the whole testing network.
+Finally we figured out that the best measurement for replica selection is the
+RTT between a client to each replica, and this can be grabbed from the socket
+connect through using the 'ss' command in Linux. We implemented an RTT report-
+back workflow between each HTTP replica to the DNS server for each client, and
+saved the measurement on DNS for each client. This could help the DNS make the
+best replica selection after several times client attempts. And this is a kind
+of passive measurement.
+
+In the future, with more time, we can do more work on how to do efficient active
+measurement on DNS. Since we found scamper + traceroute sometimes takes more
+time than our expectation. But traceroute might help to discover better routing
+path but it needs to be very carefully crafted to manage the time.
+For cache management, we implemented LRU cache this time, but Least Recently
+Used is not the only way to measure better cache hit rate. For long term running
+CDN, the visits for each page is also an important feature for enhancing the
+hit rate.
+
+===============================================================================
